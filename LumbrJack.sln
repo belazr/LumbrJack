@@ -1,0 +1,57 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.5.33530.505
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "LumbrJackDriver", "LumbrJackDriver\LumbrJackDriver.vcxproj", "{D91CFD94-438D-4823-8794-33EE241B7FFB}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "LumbrJackClient", "LumbrJackClient\LumbrJackClient.vcxproj", "{70ED6315-2F92-4C47-97E7-38924CD39D11}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|ARM64 = Debug|ARM64
+		Debug|x64 = Debug|x64
+		Debug|x86 = Debug|x86
+		Release|ARM64 = Release|ARM64
+		Release|x64 = Release|x64
+		Release|x86 = Release|x86
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{D91CFD94-438D-4823-8794-33EE241B7FFB}.Debug|ARM64.ActiveCfg = Debug|ARM64
+		{D91CFD94-438D-4823-8794-33EE241B7FFB}.Debug|ARM64.Build.0 = Debug|ARM64
+		{D91CFD94-438D-4823-8794-33EE241B7FFB}.Debug|ARM64.Deploy.0 = Debug|ARM64
+		{D91CFD94-438D-4823-8794-33EE241B7FFB}.Debug|x64.ActiveCfg = Debug|x64
+		{D91CFD94-438D-4823-8794-33EE241B7FFB}.Debug|x64.Build.0 = Debug|x64
+		{D91CFD94-438D-4823-8794-33EE241B7FFB}.Debug|x64.Deploy.0 = Debug|x64
+		{D91CFD94-438D-4823-8794-33EE241B7FFB}.Debug|x86.ActiveCfg = Debug|x64
+		{D91CFD94-438D-4823-8794-33EE241B7FFB}.Debug|x86.Build.0 = Debug|x64
+		{D91CFD94-438D-4823-8794-33EE241B7FFB}.Debug|x86.Deploy.0 = Debug|x64
+		{D91CFD94-438D-4823-8794-33EE241B7FFB}.Release|ARM64.ActiveCfg = Release|ARM64
+		{D91CFD94-438D-4823-8794-33EE241B7FFB}.Release|ARM64.Build.0 = Release|ARM64
+		{D91CFD94-438D-4823-8794-33EE241B7FFB}.Release|ARM64.Deploy.0 = Release|ARM64
+		{D91CFD94-438D-4823-8794-33EE241B7FFB}.Release|x64.ActiveCfg = Release|x64
+		{D91CFD94-438D-4823-8794-33EE241B7FFB}.Release|x64.Build.0 = Release|x64
+		{D91CFD94-438D-4823-8794-33EE241B7FFB}.Release|x64.Deploy.0 = Release|x64
+		{D91CFD94-438D-4823-8794-33EE241B7FFB}.Release|x86.ActiveCfg = Release|x64
+		{D91CFD94-438D-4823-8794-33EE241B7FFB}.Release|x86.Build.0 = Release|x64
+		{D91CFD94-438D-4823-8794-33EE241B7FFB}.Release|x86.Deploy.0 = Release|x64
+		{70ED6315-2F92-4C47-97E7-38924CD39D11}.Debug|ARM64.ActiveCfg = Debug|x64
+		{70ED6315-2F92-4C47-97E7-38924CD39D11}.Debug|ARM64.Build.0 = Debug|x64
+		{70ED6315-2F92-4C47-97E7-38924CD39D11}.Debug|x64.ActiveCfg = Debug|x64
+		{70ED6315-2F92-4C47-97E7-38924CD39D11}.Debug|x64.Build.0 = Debug|x64
+		{70ED6315-2F92-4C47-97E7-38924CD39D11}.Debug|x86.ActiveCfg = Debug|Win32
+		{70ED6315-2F92-4C47-97E7-38924CD39D11}.Debug|x86.Build.0 = Debug|Win32
+		{70ED6315-2F92-4C47-97E7-38924CD39D11}.Release|ARM64.ActiveCfg = Release|x64
+		{70ED6315-2F92-4C47-97E7-38924CD39D11}.Release|ARM64.Build.0 = Release|x64
+		{70ED6315-2F92-4C47-97E7-38924CD39D11}.Release|x64.ActiveCfg = Release|x64
+		{70ED6315-2F92-4C47-97E7-38924CD39D11}.Release|x64.Build.0 = Release|x64
+		{70ED6315-2F92-4C47-97E7-38924CD39D11}.Release|x86.ActiveCfg = Release|Win32
+		{70ED6315-2F92-4C47-97E7-38924CD39D11}.Release|x86.Build.0 = Release|Win32
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {275AB375-D9D7-485A-AE10-3C1140D69F08}
+	EndGlobalSection
+EndGlobal
