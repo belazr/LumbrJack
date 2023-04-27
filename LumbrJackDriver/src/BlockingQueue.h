@@ -6,6 +6,7 @@
 typedef struct BlockingQueue {
 	KSEMAPHORE semaphoreAdd;
 	KSEMAPHORE semaphoreRemove;
+	KSPIN_LOCK spinLock;
 	LIST_ENTRY head;
 	ULONGLONG size;
 	BOOLEAN isWaiting;
