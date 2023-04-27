@@ -1,5 +1,5 @@
 #pragma once
-// Hacky way to manage includes for bot driver and client.
+// Hacky way to manage includes for both driver and client.
 // Breaks if driver is compiled in C++
 #ifdef __cplusplus
 #include <Windows.h>
