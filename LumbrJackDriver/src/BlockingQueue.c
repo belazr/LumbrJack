@@ -12,7 +12,7 @@ void initBlockingQueue(BlockingQueue* pBlockingQueue, LONG maxSize) {
 
 
 NTSTATUS addToBlockigQueue(BlockingQueue* pBlockingQueue, LIST_ENTRY* pListEntry) {
-	NTSTATUS ntStatus = STATUS_UNSUCCESSFUL;
+	NTSTATUS ntStatus = STATUS_SUCCESS;
 	const KIRQL curIrql = KeGetCurrentIrql();
 
 	if (curIrql == DISPATCH_LEVEL) {
@@ -31,12 +31,14 @@ NTSTATUS addToBlockigQueue(BlockingQueue* pBlockingQueue, LIST_ENTRY* pListEntry
 			return ntStatus;
 		}
 
+		KeAcquireSpinLockAtDpcLevel(&pBlockingQueue->spinLock);
 		InsertTailList(&pBlockingQueue->head, pListEntry);
 		pBlockingQueue->size++;
+		KeReleaseSpinLockFromDpcLevel(&pBlockingQueue->spinLock);
+
 		KeReleaseSemaphore(&pBlockingQueue->semaphoreRemove, 0, 1, FALSE);
 	}
 	else if (curIrql < DISPATCH_LEVEL) {
-		KeAcquireSpinLockRaiseToDpc(&pBlockingQueue->spinLock);
 		ntStatus = KeWaitForSingleObject(&pBlockingQueue->semaphoreAdd, Executive, KernelMode, FALSE, NULL);
 
 		if (!NT_SUCCESS(ntStatus)) {
@@ -45,10 +47,12 @@ NTSTATUS addToBlockigQueue(BlockingQueue* pBlockingQueue, LIST_ENTRY* pListEntry
 			return ntStatus;
 		}
 
+		KeAcquireSpinLockRaiseToDpc(&pBlockingQueue->spinLock);
 		InsertTailList(&pBlockingQueue->head, pListEntry);
 		pBlockingQueue->size++;
-		KeReleaseSemaphore(&pBlockingQueue->semaphoreRemove, 0, 1, FALSE);
 		KeReleaseSpinLock(&pBlockingQueue->spinLock, curIrql);
+
+		KeReleaseSemaphore(&pBlockingQueue->semaphoreRemove, 0, 1, FALSE);
 	}
 	else {
 		DBG_PRINT("addToBlockigQueue: IRQL too high\n");
@@ -59,7 +63,7 @@ NTSTATUS addToBlockigQueue(BlockingQueue* pBlockingQueue, LIST_ENTRY* pListEntry
 
 
 NTSTATUS removeFromBlockingQueue(BlockingQueue* pBlockingQueue, LIST_ENTRY** ppListEntry) {
-	NTSTATUS ntStatus = STATUS_UNSUCCESSFUL;
+	NTSTATUS ntStatus = STATUS_SUCCESS;
 	const KIRQL curIrql = KeGetCurrentIrql();
 
 	if (curIrql == DISPATCH_LEVEL) {
@@ -78,12 +82,14 @@ NTSTATUS removeFromBlockingQueue(BlockingQueue* pBlockingQueue, LIST_ENTRY** ppL
 			return ntStatus;
 		}
 
+		KeAcquireSpinLockAtDpcLevel(&pBlockingQueue->spinLock);
 		*ppListEntry = RemoveHeadList(&pBlockingQueue->head);
 		pBlockingQueue->size--;
+		KeReleaseSpinLockFromDpcLevel(&pBlockingQueue->spinLock);
+
 		KeReleaseSemaphore(&pBlockingQueue->semaphoreAdd, 0, 1, FALSE);
 	}
 	else if (curIrql < DISPATCH_LEVEL) {
-		KeAcquireSpinLockRaiseToDpc(&pBlockingQueue->spinLock);
 		ntStatus = KeWaitForSingleObject(&pBlockingQueue->semaphoreRemove, Executive, KernelMode, FALSE, NULL);
 
 		if (!NT_SUCCESS(ntStatus)) {
@@ -92,10 +98,12 @@ NTSTATUS removeFromBlockingQueue(BlockingQueue* pBlockingQueue, LIST_ENTRY** ppL
 			return ntStatus;
 		}
 
+		KeAcquireSpinLockRaiseToDpc(&pBlockingQueue->spinLock);
 		*ppListEntry = RemoveHeadList(&pBlockingQueue->head);
 		pBlockingQueue->size--;
-		KeReleaseSemaphore(&pBlockingQueue->semaphoreAdd, 0, 1, FALSE);
 		KeReleaseSpinLock(&pBlockingQueue->spinLock, curIrql);
+
+		KeReleaseSemaphore(&pBlockingQueue->semaphoreAdd, 0, 1, FALSE);
 	}
 	else {
 		DBG_PRINT("removeFromBlockingQueue: IRQL too high\n");
