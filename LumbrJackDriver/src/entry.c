@@ -13,7 +13,7 @@ NTSTATUS NTAPI ObReferenceObjectByName(PUNICODE_STRING ObjectName, ULONG Attribu
 static void unload(PDRIVER_OBJECT pDriverObject);
 static NTSTATUS cleanupDevices(PDRIVER_OBJECT pDriverObject);
 static NTSTATUS setupCommunicationDevice(PDRIVER_OBJECT pDriverObject);
-static NTSTATUS setupKbdFilterDevice(PDRIVER_OBJECT pDriverObject);
+static NTSTATUS setupFilterDevices(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pDriverName, ULONG deviceType);
 static void setMajorFunctions(PDRIVER_OBJECT pDriverObject);
 
 NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath) {
@@ -35,20 +35,36 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath
 		return ntStatus;
 	}
 
-	ntStatus = setupKbdFilterDevice(pDriverObject);
+	UNICODE_STRING kbdDriverName = RTL_CONSTANT_STRING(L"\\Driver\\kbdclass");
+	ntStatus = setupFilterDevices(pDriverObject, &kbdDriverName, FILE_DEVICE_KEYBOARD);
 
 	if (!NT_SUCCESS(ntStatus)) {
-		DBG_PRINTF("DriverEntry: setupKbdFilterDevice failed: 0x%lx\n", ntStatus);
+		DBG_PRINTF("DriverEntry: setupFilterDevices failed for keyboard driver: 0x%lx\n", ntStatus);
 		const NTSTATUS ntStatusCleanup = cleanupDevices(pDriverObject);
 
 		if (!NT_SUCCESS(ntStatusCleanup)) {
-			DBG_PRINTF("DriverEntry: cleanupDevices failed: 0x%lx\n", ntStatusCleanup);
+			DBG_PRINTF("DriverEntry: setupFilterDevices failed: 0x%lx\n", ntStatusCleanup);
 		}
 
 		return ntStatus;
 	}
 
-	KeInitializeSemaphore(&readSemaphore, 1, 1);
+	UNICODE_STRING mouDriverName = RTL_CONSTANT_STRING(L"\\Driver\\mouclass");
+	ntStatus = setupFilterDevices(pDriverObject, &mouDriverName, FILE_DEVICE_MOUSE);
+
+	if (!NT_SUCCESS(ntStatus)) {
+		DBG_PRINTF("DriverEntry: setupFilterDevices failed for mouse driver: 0x%lx\n", ntStatus);
+		const NTSTATUS ntStatusCleanup = cleanupDevices(pDriverObject);
+
+		if (!NT_SUCCESS(ntStatusCleanup)) {
+			DBG_PRINTF("DriverEntry: setupFilterDevices failed: 0x%lx\n", ntStatusCleanup);
+		}
+
+		return ntStatus;
+	}
+
+	KeInitializeSemaphore(&readSemaphores[LOG_KBD], 1, 1);
+	KeInitializeSemaphore(&readSemaphores[LOG_MOU], 1, 1);
 	setMajorFunctions(pDriverObject);
 
 	DBG_PRINT("DriverEntry: Driver loaded\n");
@@ -60,16 +76,37 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pRegistryPath
 static void unload(PDRIVER_OBJECT pDriverObject) {
 	// stop logging if still running
 	isLogging = FALSE;
-	NTSTATUS ntStatus = cleanupDevices(pDriverObject);
+	NTSTATUS ntStatus = STATUS_SUCCESS;
+
+	// wait for all threads to finish
+	for (int i = 0; i < LOG_MAX; i++) {
+
+		if (pLogThreads[i]) {
+			ntStatus = KeWaitForSingleObject(pLogThreads[i], Executive, KernelMode, FALSE, NULL);
+
+			if (!NT_SUCCESS(ntStatus)) {
+				DBG_PRINTF("unload: KeWaitForSingleObject failed for log thread: 0x%lx\n", ntStatus);
+			}
+
+			ObfDereferenceObject(pLogThreads[i]);
+		}
+
+	}
+
+	ntStatus = cleanupDevices(pDriverObject);
 
 	if (!NT_SUCCESS(ntStatus)) {
 		DBG_PRINTF("unload: cleanupDevices failed: 0x%lx\n", ntStatus);
 	}
 
-	ntStatus = KeWaitForSingleObject(&readSemaphore, Executive, KernelMode, FALSE, NULL);
+	// wait for all read operations to finish
+	for (int i = 0; i < LOG_MAX; i++) {
+		ntStatus = KeWaitForSingleObject(&readSemaphores[i], Executive, KernelMode, FALSE, NULL);
 
-	if (!NT_SUCCESS(ntStatus)) {
-		DBG_PRINTF("unload: KeWaitForSingleObject failed for semaphore: 0x%lx\n", ntStatus);
+		if (!NT_SUCCESS(ntStatus)) {
+			DBG_PRINTF2("unload: KeWaitForSingleObject failed for read semaphore %d: 0x%lx\n", i, ntStatus);
+		}
+
 	}
 
 	DBG_PRINT("unload: Driver unloaded\n");
@@ -125,7 +162,10 @@ static NTSTATUS setupCommunicationDevice(PDRIVER_OBJECT pDriverObject) {
 
 	NTSTATUS ntStatus = IoCreateDevice(pDriverObject, 0, &devName, FILE_DEVICE_UNKNOWN, FILE_DEVICE_SECURE_OPEN, FALSE, &pComDevObject);
 
-	if (!NT_SUCCESS(ntStatus)) {
+	if (NT_SUCCESS(ntStatus)) {
+		DBG_PRINT("setupCommunicationDevice: Device created\n");
+	}
+	else {
 		DBG_PRINTF("setupCommunicationDevice: IoCreateDevice failed: 0x%lx\n", ntStatus);
 
 		return ntStatus;
@@ -133,7 +173,10 @@ static NTSTATUS setupCommunicationDevice(PDRIVER_OBJECT pDriverObject) {
 
 	ntStatus = IoCreateSymbolicLink(&symLink, &devName);
 
-	if (!NT_SUCCESS(ntStatus)) {
+	if (NT_SUCCESS(ntStatus)) {
+		DBG_PRINT("setupCommunicationDevice: Symbolic link created\n");
+	}
+	else {
 		DBG_PRINTF("setupCommunicationDevice: IoCreateSymbolicLink failed: 0x%lx\n", ntStatus);
 	}
 
@@ -141,14 +184,13 @@ static NTSTATUS setupCommunicationDevice(PDRIVER_OBJECT pDriverObject) {
 }
 
 
-// setup filter devices for keyboard
-static NTSTATUS setupKbdFilterDevice(PDRIVER_OBJECT pDriverObject) {
-	UNICODE_STRING kbdClassName = RTL_CONSTANT_STRING(L"\\Driver\\kbdclass");
+// setup filter devices
+static NTSTATUS setupFilterDevices(PDRIVER_OBJECT pDriverObject, PUNICODE_STRING pDriverName, ULONG deviceType) {
 	PDRIVER_OBJECT targetDriverObject = NULL;
-	NTSTATUS ntStatus = ObReferenceObjectByName(&kbdClassName, OBJ_CASE_INSENSITIVE, NULL, 0, *IoDriverObjectType, KernelMode, NULL, &targetDriverObject);
+	NTSTATUS ntStatus = ObReferenceObjectByName(pDriverName, OBJ_CASE_INSENSITIVE, NULL, 0, *IoDriverObjectType, KernelMode, NULL, &targetDriverObject);
 
 	if (!NT_SUCCESS(ntStatus)) {
-		DBG_PRINTF("setupKbdFilterDevice: ObReferenceObjectByName failed: 0x%lx\n", ntStatus);
+		DBG_PRINTF("setupFilterDevices: ObReferenceObjectByName failed: 0x%lx\n", ntStatus);
 
 		return ntStatus;
 	}
@@ -158,30 +200,31 @@ static NTSTATUS setupKbdFilterDevice(PDRIVER_OBJECT pDriverObject) {
 
 	while (pCurDeviceObject) {
 		PDEVICE_OBJECT pFltDevObject = NULL;
-		ntStatus = IoCreateDevice(pDriverObject, sizeof(DEVOBJ_EXTENSION), NULL, FILE_DEVICE_KEYBOARD, FILE_DEVICE_SECURE_OPEN, FALSE, &pFltDevObject);
+		ntStatus = IoCreateDevice(pDriverObject, sizeof(DEVOBJ_EXTENSION), NULL, deviceType, FILE_DEVICE_SECURE_OPEN, FALSE, &pFltDevObject);
 
-		if (!NT_SUCCESS(ntStatus)) {
-			DBG_PRINTF("setupKbdFilterDevice: IoCreateDevice failed: 0x%lx\n", ntStatus);
+		if (NT_SUCCESS(ntStatus)) {
+			DBG_PRINT("setupFilterDevices: Device created\n");
+		}
+		else {
+			DBG_PRINTF("setupFilterDevices: IoCreateDevice failed: 0x%lx\n", ntStatus);
 			pCurDeviceObject = pCurDeviceObject->NextDevice;
 
 			continue;
 		}
-		else {
-			DBG_PRINT("setupKbdFilterDevice: Device created\n");
-		}
 
 		RtlZeroMemory(pFltDevObject->DeviceExtension, sizeof(DEVOBJ_EXTENSION));
+		((PDEVOBJ_EXTENSION)pFltDevObject->DeviceExtension)->Type = (CSHORT)deviceType;
 		ntStatus = IoAttachDeviceToDeviceStackSafe(pFltDevObject, pCurDeviceObject, &((PDEVOBJ_EXTENSION)pFltDevObject->DeviceExtension)->DeviceObject);
 
-		if (!NT_SUCCESS(ntStatus)) {
-			DBG_PRINTF("setupKbdFilterDevice: IoAttachDeviceToDeviceStackSafe failed: 0x%lx\n", ntStatus);
+		if (NT_SUCCESS(ntStatus)) {
+			DBG_PRINT("setupFilterDevices: Device attached\n");
+		}
+		else {
+			DBG_PRINTF("setupFilterDevices: IoAttachDeviceToDeviceStackSafe failed: 0x%lx\n", ntStatus);
 			IoDeleteDevice(pFltDevObject);
 			pCurDeviceObject = pCurDeviceObject->NextDevice;
 
 			continue;
-		}
-		else {
-			DBG_PRINT("setupKbdFilterDevice: Device attached\n");
 		}
 
 		pFltDevObject->Flags |= DO_BUFFERED_IO;
@@ -195,11 +238,11 @@ static NTSTATUS setupKbdFilterDevice(PDRIVER_OBJECT pDriverObject) {
 
 static void setMajorFunctions(PDRIVER_OBJECT pDriverObject) {
 	
-	pDriverObject->MajorFunction[IRP_MJ_CREATE] = passThrough;
-	pDriverObject->MajorFunction[IRP_MJ_CLOSE] = passThrough;
-	pDriverObject->MajorFunction[IRP_MJ_CLOSE] = passThrough;
-	pDriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] = dispatchDevCtl;
-	pDriverObject->MajorFunction[IRP_MJ_READ] = dispatchRead;
+	pDriverObject->MajorFunction[IRP_MJ_CREATE] = LmbPassThrough;
+	pDriverObject->MajorFunction[IRP_MJ_CLOSE] = LmbPassThrough;
+	pDriverObject->MajorFunction[IRP_MJ_CLOSE] = LmbPassThrough;
+	pDriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] = LmbDispatchDeviceControl;
+	pDriverObject->MajorFunction[IRP_MJ_READ] = LmbDispatchRead;
 
 	return;
 }

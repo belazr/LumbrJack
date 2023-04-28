@@ -1,6 +1,11 @@
 #pragma once
 #include "BlockingQueue.h"
 #include <Ntddkbd.h>
+#include <Ntddmou.h>
+
+typedef enum LogType {
+	LOG_KBD, LOG_MOU, LOG_MAX
+}LogType;
 
 // Structure for a doubly linked list containing KEYBOARD_INPUT_DATA for the blocking queue.
 typedef struct KbdListData {
@@ -8,10 +13,19 @@ typedef struct KbdListData {
 	KEYBOARD_INPUT_DATA data;
 }KbdListData;
 
-// Blocking queue to process the KEYBOARD_INPUT_DATA of keystrokes.
-extern BlockingQueue kbdInputQueue;
+// Structure for a doubly linked list containing MOUSE_INPUT_DATA for the blocking queue.
+typedef struct MouListData {
+	LIST_ENTRY list;
+	MOUSE_INPUT_DATA data;
+}MouListData;
 
-// Starts the logging thread.
+// Logging thread objects.
+extern PKTHREAD pLogThreads[LOG_MAX];
+
+// Blocking queues to process input data.
+extern BlockingQueue inputQueues[LOG_MAX];
+
+// Starts a logging thread.
 // The driver will not unload before this thread has not finished.
 //
 // Parameters:
@@ -19,18 +33,12 @@ extern BlockingQueue kbdInputQueue;
 // [in] pDriverObject:
 // Address of the driver object of the current driver.
 // 
+// [in] type:
+// The logging type that should be performed by the thread.
+// 
 // Return:
 // An appropriate NTSTATUS value.
-NTSTATUS startLogThread(PDRIVER_OBJECT pDriverObject);
-
-// ThreadStart routine for the logging thread.
-// Creates a log file at C:\log.txt and logs all keystrokes to this file until the bocking queue is signaled to stop waiting ans empty.
-// Releases the file only on return.
-//
-// Parameters:
-// [in] pStartContext:
-// Unused.
-void logStartRoutine(PVOID pStartContext);
+NTSTATUS startLogThread(PDRIVER_OBJECT pDriverObject, LogType type);
 
 // Logs a KEYBOARD_INPUT_DATA stucture to the debugger.
 //
@@ -40,13 +48,11 @@ void logStartRoutine(PVOID pStartContext);
 // Address of the KEYBOARD_INPUT_DATA stucture to log.
 void logKbdToDbg(PKEYBOARD_INPUT_DATA pKbdInputData);
 
-// Logs a KEYBOARD_INPUT_DATA stucture to a file.
+// Logs a MOUSE_INPUT_DATA stucture to the debugger.
+// Only logs if either the left or right mouse button get pressed or released.
 //
 // Parameters:
 // 
-// [in] pKbdInputData:
+// [in] pMouInputData:
 // Address of the KEYBOARD_INPUT_DATA stucture to log.
-//
-// [in]
-// Handle to the log file. Needs FILE_WRITE_DATA acces rights.
-NTSTATUS logKbdToFile(PKEYBOARD_INPUT_DATA pKbdInputData, HANDLE hFile);
+void logMouToDbg(PMOUSE_INPUT_DATA pMouInputData);

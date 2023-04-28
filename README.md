@@ -1,6 +1,6 @@
 # LumbrJack
 LumbrJack is a very basic kernel mode logger for 64 bit Windows.
-It currently logs all keystrokes of the keyboard to a text file.
+It currently logs all keystrokes of the keyboard and all left/right mouse clicks with relative coordinates of the cursor to text files.
 
 It consists of a kernel mode filter driver (using WDM) and a user mode client application to control the driver.
 
@@ -44,18 +44,17 @@ For example from an admin cmd prompt:
 C:\LumbrJackClient.exe C:\LumbrJackDriver.sys
 ```
 
-Now select an option from the menu by entering the item number and pressing enter.
-- First the driver needs to be installed as a service, so select **1**.
-- Then you can start the driver by selecting **2**.
-- To start logging select **6**. Now all keystrokes get logged to the logfile ("C:\log.txt"). **If this file already exists it will be overwritten.**
-- To stop logging select **7**. Now you can open the log file and inspect the output.
-- To stop the driver select **3**.
-- To uninstall the driver select **4**.
+Now select an option from the menu by entering the item number and press enter.
+1) First the driver needs to be installed as a service, so select **1**.
+2) Then you can start the driver by selecting **2**.
+3) To start logging select **6**. Now all keystrokes/mouseclicks get logged to the respective log files: "C:\kbd.log" for keyboard and "C:\mou.log" for mouse logging. **If these files already exist they will be overwritten.**
+4) To stop logging select **7**. Each log file logs one more action until it is released. Press a key on the keyboard or a mouse button if log files are still locked. Now you can open the log files and inspect the output.
+5) To stop the driver select **3**. If the driver is still logging, up to two keystrokes/mouseclicks are needed to close the log files and unload the driver completely.
+6) To uninstall the driver select **4**.
 
 ## Known Issues
 - Scan code to ascii lookup array is only partially correct and only compatible with german keyboard layouts
 
 ## TODOs
 - Fix scan code to ascii lookup array
-- Add logging for mouse input
 - Add logging for file operations

