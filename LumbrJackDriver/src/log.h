@@ -8,16 +8,16 @@ typedef enum LogType {
 }LogType;
 
 // Structure for a doubly linked list containing KEYBOARD_INPUT_DATA for the blocking queue.
-typedef struct KbdListData {
+typedef struct KbdDataEntry {
 	LIST_ENTRY list;
 	KEYBOARD_INPUT_DATA data;
-}KbdListData;
+}KbdDataEntry;
 
 // Structure for a doubly linked list containing MOUSE_INPUT_DATA for the blocking queue.
-typedef struct MouListData {
+typedef struct MouDataEntry {
 	LIST_ENTRY list;
 	MOUSE_INPUT_DATA data;
-}MouListData;
+}MouDataEntry;
 
 // Logging thread objects.
 extern PKTHREAD pLogThreads[LOG_MAX];

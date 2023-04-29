@@ -225,10 +225,18 @@ static NTSTATUS completeKbdRead(PDEVICE_OBJECT pDeviceObject, PIRP pIrp, PVOID p
 	UNREFERENCED_PARAMETER(pDeviceObject);
 	UNREFERENCED_PARAMETER(pContext);
 
-	const PKEYBOARD_INPUT_DATA pKbdInputData = (PKEYBOARD_INPUT_DATA)pIrp->AssociatedIrp.SystemBuffer;
+	const size_t countData = pIrp->IoStatus.Information / sizeof(KEYBOARD_INPUT_DATA);
 
-	if (pKbdInputData) {
-		
+	for (size_t i = 0; i < countData; i++) {
+
+		const PKEYBOARD_INPUT_DATA pKbdInputData = (PKEYBOARD_INPUT_DATA)pIrp->AssociatedIrp.SystemBuffer;
+
+		if (!pKbdInputData) {
+			DBG_PRINT("completeKbdRead: No data\n");
+
+			continue;
+		}
+
 		if (isLogging) {
 			logKbdToDbg(pKbdInputData);
 		}
@@ -241,28 +249,25 @@ static NTSTATUS completeKbdRead(PDEVICE_OBJECT pDeviceObject, PIRP pIrp, PVOID p
 				inputQueues[LOG_KBD].isWaiting = FALSE;
 			}
 
-			KbdListData* pKbdListData = (KbdListData*)ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(KbdListData), KBD_LIST_DATA_TAG);
+			KbdDataEntry* const pKbdDataEntry = (KbdDataEntry*)ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(KbdDataEntry), KBD_LIST_DATA_TAG);
 
-			if (pKbdListData) {
-				pKbdListData->data = *pKbdInputData;
-				const NTSTATUS ntStatus = addToBlockigQueue(&inputQueues[LOG_KBD], &pKbdListData->list);
-
-				if (ntStatus != STATUS_SUCCESS) {
-					DBG_PRINTF("completeKbdRead: addBlockigQueue failed: 0x%lx\n", ntStatus);
-
-					ExFreePoolWithTag(pKbdListData, KBD_LIST_DATA_TAG);
-				}
-
-			}
-			else {
+			if (!pKbdDataEntry) {
 				DBG_PRINT("completeKbdRead: ExAllocatePool2 failed\n");
+
+				continue;
+			}
+
+			pKbdDataEntry->data = *pKbdInputData;
+			const NTSTATUS ntStatus = addToBlockigQueue(&inputQueues[LOG_KBD], &pKbdDataEntry->list);
+
+			if (ntStatus != STATUS_SUCCESS) {
+				DBG_PRINTF("completeKbdRead: addBlockigQueue failed: 0x%lx\n", ntStatus);
+
+				ExFreePoolWithTag(pKbdDataEntry, KBD_LIST_DATA_TAG);
 			}
 
 		}
 
-	}
-	else {
-		DBG_PRINT("completeKbdRead: No data\n");
 	}
 
 	NTSTATUS ntStatus = pIrp->IoStatus.Status;
@@ -325,10 +330,17 @@ static NTSTATUS completeMouRead(PDEVICE_OBJECT pDeviceObject, PIRP pIrp, PVOID p
 	UNREFERENCED_PARAMETER(pDeviceObject);
 	UNREFERENCED_PARAMETER(pContext);
 
-	const PMOUSE_INPUT_DATA pMouInputData = (PMOUSE_INPUT_DATA)pIrp->AssociatedIrp.SystemBuffer;
+	const size_t countData = pIrp->IoStatus.Information / sizeof(MOUSE_INPUT_DATA);
 
-	if (pMouInputData) {
-			
+	for (size_t i = 0; i < countData; i++) {
+		const PMOUSE_INPUT_DATA pMouInputData = (PMOUSE_INPUT_DATA)pIrp->AssociatedIrp.SystemBuffer + i;
+
+		if (!pMouInputData) {
+			DBG_PRINT("completeMouRead: No data\n");
+
+			continue;
+		}
+
 		// log just button strokes, no movement
 		if (isLogging && pMouInputData->ButtonFlags) {
 			logMouToDbg(pMouInputData);
@@ -343,29 +355,26 @@ static NTSTATUS completeMouRead(PDEVICE_OBJECT pDeviceObject, PIRP pIrp, PVOID p
 				inputQueues[LOG_MOU].isWaiting = FALSE;
 			}
 
-			MouListData* pMouListData = (MouListData*)ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(MouListData), MOU_LIST_DATA_TAG);
+			MouDataEntry* const pMouDataEntry = (MouDataEntry*)ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(MouDataEntry), MOU_LIST_DATA_TAG);
 
-			if (pMouListData) {
-				pMouListData->data = *pMouInputData;
-				const NTSTATUS ntStatus = addToBlockigQueue(&inputQueues[LOG_MOU], &pMouListData->list);
-
-				if (ntStatus != STATUS_SUCCESS) {
-					DBG_PRINTF("completeMouRead: addBlockigQueue failed: 0x%lx\n", ntStatus);
-
-					ExFreePoolWithTag(pMouListData, MOU_LIST_DATA_TAG);
-				}
-
-			}
-			else {
+			if (!pMouDataEntry) {
 				DBG_PRINT("completeMouRead: ExAllocatePool2 failed\n");
+
+				continue;
+			}
+
+			pMouDataEntry->data = *pMouInputData;
+			const NTSTATUS ntStatus = addToBlockigQueue(&inputQueues[LOG_MOU], &pMouDataEntry->list);
+
+			if (ntStatus != STATUS_SUCCESS) {
+				DBG_PRINTF("completeMouRead: addBlockigQueue failed: 0x%lx\n", ntStatus);
+
+				ExFreePoolWithTag(pMouDataEntry, MOU_LIST_DATA_TAG);
 			}
 
 		}
 
-	}
-	else {
-		DBG_PRINT("completeMouRead: No data\n");
-	}
+	}	
 
 	NTSTATUS ntStatus = pIrp->IoStatus.Status;
 

