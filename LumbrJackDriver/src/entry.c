@@ -78,17 +78,19 @@ static void unload(PDRIVER_OBJECT pDriverObject) {
 	isLogging = FALSE;
 	NTSTATUS ntStatus = STATUS_SUCCESS;
 
-	// wait for all threads to finish
+	// stop all threads
 	for (int i = 0; i < LOG_MAX; i++) {
 
 		if (pLogThreads[i]) {
-			ntStatus = KeWaitForSingleObject(pLogThreads[i], Executive, KernelMode, FALSE, NULL);
+			ntStatus = stopLogThread(i);
 
-			if (!NT_SUCCESS(ntStatus)) {
-				DBG_PRINTF("unload: KeWaitForSingleObject failed for log thread: 0x%lx\n", ntStatus);
+			if (NT_SUCCESS(ntStatus)) {
+				DBG_PRINTF("unload: Stopped log thread %d\n", i);
+			}
+			else {
+				DBG_PRINTF2("unload: stopLogThread failed for type %d: 0x%lx\n", i, ntStatus);
 			}
 
-			ObfDereferenceObject(pLogThreads[i]);
 		}
 
 	}

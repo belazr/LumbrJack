@@ -40,6 +40,17 @@ extern BlockingQueue inputQueues[LOG_MAX];
 // An appropriate NTSTATUS value.
 NTSTATUS startLogThread(PDRIVER_OBJECT pDriverObject, LogType type);
 
+// Stops a logging thread by sending a dummy item to the blocking queue.
+//
+// Parameters:
+//
+// [in] type:
+// The logging type of the thread.
+//
+// Return:
+// An appropriate NTSTATUS value.
+NTSTATUS stopLogThread(LogType type);
+
 // Logs a KEYBOARD_INPUT_DATA stucture to the debugger.
 //
 // Parameters:
