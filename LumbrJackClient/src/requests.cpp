@@ -1,5 +1,6 @@
 #include "requests.h"
 #include  "..\..\LumbrJackDriver\src\ioctl.h"
+#include <iostream>
 
 namespace requests {
 
@@ -12,6 +13,15 @@ namespace requests {
 
 
     bool startLogging(HANDLE hDevice) {
+        bool isLogging = false;
+
+        if (!getLoggingState(hDevice, &isLogging)) return false;
+
+        if (isLogging) {
+            std::cout << "Driver already logging." << std::endl;
+
+            return false;
+        }
 
         if (!DeviceIoControl(hDevice, IOCTL_LOG_START, nullptr, 0, nullptr, 0, nullptr, nullptr)) return false;
 
@@ -19,6 +29,15 @@ namespace requests {
     }
 
     bool stopLogging(HANDLE hDevice) {
+        bool isLogging = false;
+
+        if (!getLoggingState(hDevice, &isLogging)) return false;
+
+        if (!isLogging) {
+            std::cout << "Driver not logging." << std::endl;
+
+            return false;
+        }
 
         if (!DeviceIoControl(hDevice, IOCTL_LOG_STOP, nullptr, 0, nullptr, 0, nullptr, nullptr)) return false;
 
